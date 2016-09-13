@@ -32,7 +32,7 @@ from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 
-from ryu.lib.packet.ether_types import *    #Import 
+from ryu.lib.packet.ether_types import *    #Import different type of ethernet headers
 
 
 class SimpleSwitch(app_manager.RyuApp):
