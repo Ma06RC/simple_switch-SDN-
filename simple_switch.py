@@ -15,6 +15,13 @@
 
 #nwen302@192.168.56.101/nwen302/mininet/ryu/ryu/app/
 
+#sudo vim mininet/ryu/ryu/app/simple_switch.py
+#:%d
+#press I to insert
+#Cmd shift V to paste the file
+#esc, and :wq
+
+
 """
 An OpenFlow 1.0 L2 learning switch implementation.
 """
@@ -32,21 +39,15 @@ from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 
-from ryu.lib.packet.ether_types import *    #Import different type of ethernet headers
-
+#from ryu.lib.packet.ether_types import *    #Import different type of ethernet headers
+from ryu.lib.ip import *
 
 class SimpleSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
 
-    #Initialise and Define the host addresses:
-    h1_mac_addr = '00:00:00:00:00:01'
-    h2_mac_addr = '00:00:00:00:00:02'
-    h3_mac_addr = '00:00:00:00:00:03'
-
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-
 
 
     def add_flow(self, datapath, in_port, dst, actions):
@@ -62,12 +63,35 @@ class SimpleSwitch(app_manager.RyuApp):
             flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
         datapath.send_msg(mod)
 
+    # Rule for blocking traffic between h2 and h3
+    def block_flow(self, datapath, in_port, dst, h2_ip, h3_ip, actions):
+        ofproto = datapath.ofproto
+        
+        match = datapath.ofproto_parser.OFPMatch(in_port=in_port, dl_dst=haddr_to_bin(dst), nw_src=h2_ip, nw_dst=h3_ip)
+    
+        mod = datapath.ofproto_parser.OFPFlowMod(
+            datapath=datapath, match=match, cookie=0,
+            command=ofproto.OFPFC_ADD, idle_timeout=0, hard_timeout=0,
+            priority=ofproto.OFP_DEFAULT_PRIORITY,
+            flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
+        datapath.send_msg(mod)
 
     #   Allow an application to receive packets sent by the switch to the controller.
     #   The first argument of the decorator calls this function everytime a packet_in message is received. 
     #   The second argument indicates the switch state. 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        #Initialise and Define the host addresses:
+        h1_mac_addr = "00:00:00:00:00:01"
+        h2_mac_addr = "00:00:00:00:00:02"
+        h3_mac_addr = "00:00:00:00:00:03"
+
+        h1_ip_addr = "10.0.0.1"
+        h2_ip_addr = "10.0.0.2"
+        h3_ip_addr = "10.0.0.3"
+
+        h1_count_traffic = 0        # host 1 traffic counter
+
         msg = ev.msg                # Object representing a packet_in data structure.
         datapath = msg.datapath     # Switch Datapath ID
         ofproto = datapath.ofproto  # OpenFlow Protocol version the entities negotiated
@@ -91,34 +115,30 @@ class SimpleSwitch(app_manager.RyuApp):
         if dst in self.mac_to_port[dpid]:
             out_port = self.mac_to_port[dpid][dst]
         else:
-            out_port = ofproto.OFPP_FLOOD
-
-        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]   #the action to take, when it gets a packet, is to send it out to out_port
+            out_port = ofproto.OFPP_FLOOD        
 
         #This if statement checks the ethertype and checks if h2 and h3 are communicating
-        if (ETH_TYPE_IP = eth or ETH_TYPE_IPV6 = eth
-            and src = h2_mac_addr and dst = h3_mac_addr
-            or src = h3_mac_addr and dst = h2_mac_addr):
-                self.logger.info("Block IP traffic between host 2 and host 3")
-                actions = []
+        if (src == h2_mac_addr and dst == h3_mac_addr):
+            self.logger.info("Block IP traffic between %s to %s", src, dst)
+            actions = []
+            self.block_flow(datapath, msg.in_port, dst, h2_ip_addr, h3_ip_addr, actions)
 
+        if(src == h3_mac_addr and dst == h2_mac_addr):
+            self.logger.info("Block IP traffic between %s to %s", src, dst)
+            actions = []
+            self.block_flow(datapath, msg.in_port, dst, h3_ip_addr, h2_ip_addr, actions)
+        
+        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]   #the action to take, when it gets a packet, is to send it out to out_port
+            
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_FLOOD:
             self.add_flow(datapath, msg.in_port, dst, actions)
+        
 
         out = datapath.ofproto_parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
             actions=actions)
         datapath.send_msg(out)
-
-    # Returns a boolean to check if packets comes from either host 2 or 3 then return true. otherwise false
-    # Block IP traffic between host 2 and host 3
-    def block_traffic(self, pckt):
-        data_packet = packet.Packet(pckt)
-        for protocol in data_packet.protocols:
-            if (protocol.protocol_name == 'ipv4' and ((ipv4_to_str(protocol.src) == SimpleSwitch.ipv4_h2 and ipv4_to_str(protocol.dst) == SimpleSwitch.ipv4_h3) or (ipv4_to_str(protocol.src) == SimpleSwitch.ipv4_h3 and ipv4_to_str(protocol.dst) == SimpleSwitch.ipv4_h2))):
-                return True
-        return False
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
