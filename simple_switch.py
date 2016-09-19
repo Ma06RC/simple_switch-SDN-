@@ -38,9 +38,11 @@ from ryu.ofproto import ofproto_v1_0
 from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+from ryu.lib.packet import ipv4
 
-#from ryu.lib.packet.ether_types import *    #Import different type of ethernet headers
+from netaddr import IPAddress
 from ryu.lib.ip import *
+from ryu.lib.ofctl_v1_0 import *        # to get the stat from/to h1 traffic
 
 class SimpleSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
@@ -64,10 +66,11 @@ class SimpleSwitch(app_manager.RyuApp):
         datapath.send_msg(mod)
 
     # Rule for blocking traffic between h2 and h3
-    def block_flow(self, datapath, in_port, dst, h2_ip, h3_ip, actions):
+    def block_flow(self, datapath, in_port, ip1, ip2, actions):
         ofproto = datapath.ofproto
         
-        match = datapath.ofproto_parser.OFPMatch(in_port=in_port, dl_dst=haddr_to_bin(dst), nw_src=h2_ip, nw_dst=h3_ip)
+        match = datapath.ofproto_parser.OFPMatch(
+            in_port=in_port, dl_type=0x0800, nw_src=ip1, nw_dst=ip2)
     
         mod = datapath.ofproto_parser.OFPFlowMod(
             datapath=datapath, match=match, cookie=0,
@@ -86,9 +89,9 @@ class SimpleSwitch(app_manager.RyuApp):
         h2_mac_addr = "00:00:00:00:00:02"
         h3_mac_addr = "00:00:00:00:00:03"
 
-        h1_ip_addr = "10.0.0.1"
-        h2_ip_addr = "10.0.0.2"
-        h3_ip_addr = "10.0.0.3"
+        h1_ip_addr = '10.0.0.1'
+        h2_ip_addr = '10.0.0.2'
+        h3_ip_addr = '10.0.0.3'
 
         h1_count_traffic = 0        # host 1 traffic counter
 
@@ -99,10 +102,27 @@ class SimpleSwitch(app_manager.RyuApp):
         # Inspect the packet headers with its packet type eg. IPV6,IPV4,ARP,TCP,UDP and etc. 
         pkt = packet.Packet(msg.data)   
         eth = pkt.get_protocol(ethernet.ethernet)
-
+        
         # To extract Ether header details
         dst = eth.dst
         src = eth.src
+
+        #Checks if the packet is ipv4 ethernet
+        if (pkt.get_protocol(ipv4.ipv4)):
+            ipv4_h =  pkt.get_protocol(ipv4.ipv4)
+            ipv4_dest = int(IPAddress(ipv4_h.dst))      
+            ipv4_src = int(IPAddress(ipv4_h.src))
+
+             #This if statement checks the ethertype and checks if h2 and h3 are communicating
+            if (src == h2_mac_addr and dst == h3_mac_addr):
+                self.logger.info("Block IP traffic between %s to %s", src, dst)
+                actions = []
+                self.block_flow(datapath, msg.in_port, ipv4_src, ipv4_dest, actions)
+
+            if(src == h3_mac_addr and dst == h2_mac_addr):
+                self.logger.info("Block IP traffic between %s to %s", src, dst)
+                actions = []
+                self.block_flow(datapath, msg.in_port, ipv4_src, ipv4_dest, actions)
 
         dpid = datapath.id      #datapaths are connections from switches to the controller
         self.mac_to_port.setdefault(dpid, {})
@@ -117,23 +137,12 @@ class SimpleSwitch(app_manager.RyuApp):
         else:
             out_port = ofproto.OFPP_FLOOD        
 
-        #This if statement checks the ethertype and checks if h2 and h3 are communicating
-        if (src == h2_mac_addr and dst == h3_mac_addr):
-            self.logger.info("Block IP traffic between %s to %s", src, dst)
-            actions = []
-            self.block_flow(datapath, msg.in_port, dst, h2_ip_addr, h3_ip_addr, actions)
-
-        if(src == h3_mac_addr and dst == h2_mac_addr):
-            self.logger.info("Block IP traffic between %s to %s", src, dst)
-            actions = []
-            self.block_flow(datapath, msg.in_port, dst, h3_ip_addr, h2_ip_addr, actions)
-        
         actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]   #the action to take, when it gets a packet, is to send it out to out_port
-            
+        
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_FLOOD:
             self.add_flow(datapath, msg.in_port, dst, actions)
-        
+            
 
         out = datapath.ofproto_parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
